@@ -5,10 +5,7 @@
 param(
     [Parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
-    [string[]]$Stages,
-
-    [Parameter(Mandatory=$false)]
-    [switch]$UseLocalBuild = $false
+    [string[]]$Stages
 )
 
 ########
