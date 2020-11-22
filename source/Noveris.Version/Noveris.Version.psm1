@@ -4,264 +4,142 @@
 ################
 # Global settings
 $ErrorActionPreference = "Stop"
+$InformationPreference = "Continue"
 Set-StrictMode -Version 2.0
 
-################
+########
 # Script variables
-$script:MinDate = (New-Object DateTime -ArgumentList 1970, 1, 1)
+$semVerPattern = "^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
 
 <#
 #>
-Class VersionStore
-{
-    [int]$Major
-    [int]$Minor
-    [int]$Patch
-    [int]$Build
+Function Get-BuildNumber {
+    [OutputType('System.Int64')]
+    [CmdletBinding()]
+    param(
+    )
 
-    <#
-    #>
-    VersionStore()
+    process
     {
-        $this.Major = 0
-        $this.Minor = 0
-        $this.Patch = 0
-        $this.Build = 0
-
-        $this | Add-Member -Name SemVer -MemberType ScriptProperty -Value {
-            return ([string]::Format("{0}.{1}.{2}", $this.Major, $this.Minor, $this.Patch))
-        }
-
-        $this | Add-Member -Name FullVer -MemberType ScriptProperty -Value {
-            return ([string]::Format("{0}.{1}.{2}.{3}", $this.Major, $this.Minor, $this.Patch, $this.Build))
-        }
-    }
-
-    <#
-    #>
-    VersionStore([VersionStore] $version)
-    {
-        $this.Major = $version.Major
-        $this.Minor = $version.Minor
-        $this.Patch = $version.Patch
-        $this.Build = $version.Build
-
-        $this | Add-Member -Name SemVer -MemberType ScriptProperty -Value {
-            return ([string]::Format("{0}.{1}.{2}", $this.Major, $this.Minor, $this.Patch))
-        }
-
-        $this | Add-Member -Name FullVer -MemberType ScriptProperty -Value {
-            return ([string]::Format("{0}.{1}.{2}.{3}", $this.Major, $this.Minor, $this.Patch, $this.Build))
-        }
-    }
-
-    <#
-    #>
-    [string] ToString()
-    {
-        return ([string]::Format("{0}.{1}.{2}", $this.Major, $this.Minor, $this.Patch))
+        $MinDate = New-Object DateTime -ArgumentList 1970, 1, 1
+        [Int64]([DateTime]::Now - $MinDate).TotalDays
     }
 }
 
 <#
 #>
-Function ConvertTo-VersionStore
+Function Select-ValidVersions
 {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true,ValueFromPipeline)]
+        [AllowNull()]
         [AllowEmptyString()]
-        [string]$Version,
+        [string]$Source,
 
         [Parameter(Mandatory=$false)]
-        [switch]$AddMissingBuildNumber = $false,
+        [switch]$First = $false,
 
         [Parameter(Mandatory=$false)]
-        [switch]$ForceBuildGeneration = $false,
-
-        [Parameter(Mandatory=$false,ParameterSetName="AllMustMatch")]
-        [switch]$AllMustMatch = $false,
-
-        [Parameter(Mandatory=$false,ParameterSetName="MatchFirst")]
-        [switch]$MatchFirst = $false,
-
-        [Parameter(Mandatory=$false)]
-        [switch]$MatchRequired = $false
+        [switch]$Required = $false
     )
 
     begin
     {
-        $matchNum = 0
-        $stopProcessing = $false
+        $MatchFound = $false
     }
 
     process
     {
-        if ($stopProcessing)
+        if ([string]::IsNullOrEmpty($Source))
         {
+            Write-Verbose "Null or empty version supplied"
             return
         }
 
-        Write-Verbose "Processing version: $Version"
-        $source = $Version
-
-        # Ignore empty version sources (or fail, if strict)
-        if ([string]::IsNullOrEmpty($source))
+        if ($MatchFound -and $First)
         {
-            if ($AllMustMatch)
-            {
-                throw New-Object ArgumentException -ArgumentList "Version supplied (${source}) is not formatted correctly"
-            }
-
+            Write-Verbose "Ignoring source - valid version already identified and -First specified"
             return
         }
+
+        Write-Verbose "Processing Version Source: ${Source}"
+        $working = $Source
 
         # Strip any refs/tags/ reference at the beginning of the version source
         $tagBranch = "refs/tags/"
-        if ($source.StartsWith($tagBranch))
+        if ($working.StartsWith($tagBranch))
         {
-            Write-Verbose "Version in refs/tags format"
-            $source = $source.Substring($tagBranch.Length)
+            Write-Verbose "Version starts with refs/tags format - Removing"
+            $working = $working.Substring($tagBranch.Length)
         }
 
-        $versionStore = New-Object VersionStore
-        
-        # Check for three number version format (Major.Minor.Patch)
-        if ($source -match "^[v]*([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$")
+        # Save a copy of the raw version, minus the leading refs/tags, if it existed, as the tag
+        $tag = $working
+
+        # Leading 'v' should be stripped for SemVer processing
+        if ($working.StartsWith("v"))
         {
-            Write-Verbose "Version matches Major.Minor.Patch.Build format"
-            $major = [Convert]::ToInt64($Matches[1])
-            $minor = [Convert]::ToInt64($Matches[2])
-            $patch = [Convert]::ToInt64($Matches[3])
-            $build = [Convert]::ToInt64($Matches[4])
-
-            $versionStore.Major = $major
-            $versionStore.Minor = $minor
-            $versionStore.Patch = $patch
-            $versionStore.Build = $build
-
-            if ($ForceBuildGeneration)
-            {
-                Write-Verbose "Forcing regeneration of build number"
-                $versionStore.Build = [Int64]([DateTime]::Now - $script:MinDate).TotalDays
-            }
-
-            $matchNum++
-            $versionStore
-
-            if ($MatchFirst)
-            {
-                Write-Verbose "MatchFirst specified and match found"
-                $stopProcessing = $true
-            }
+            Write-Verbose "Version starts with 'v' - Removing"
+            $working = $working.Substring(1)
         }
-        # Check for four number version format (Major.Minor.Patch.Build)
-        elseif ($source -match "^[v]*([0-9]+)\.([0-9]+)\.([0-9]+)$")
+
+        # Check if we match the semver regex pattern
+        # Regex used directly from semver.org
+        if ($working -notmatch $semVerPattern)
         {
-            Write-Verbose "Version matches Major.Minor.Patch format"
-            $major = [Convert]::ToInt64($Matches[1])
-            $minor = [Convert]::ToInt64($Matches[2])
-            $patch = [Convert]::ToInt64($Matches[3])
-
-            $versionStore.Major = $major
-            $versionStore.Minor = $minor
-            $versionStore.Patch = $patch
-
-            $versionStore.Build = 0
-            if ($ForceBuildGeneration)
-            {
-                Write-Verbose "Forcing regeneration of build number"
-                $versionStore.Build = [Int64]([DateTime]::Now - $script:MinDate).TotalDays
-            }
-            elseif ($AddMissingBuildNumber)
-            {
-                Write-Verbose "Adding missing build number"
-                $versionStore.Build = [Int64]([DateTime]::Now - $script:MinDate).TotalDays
-            }
-
-            $matchNum++
-            $versionStore
-
-            if ($MatchFirst)
-            {
-                Write-Verbose "MatchFirst specified and match found"
-                $stopProcessing = $true
-            }
+            Write-Verbose "Version string not in correct format. skipping"
+            return
         }
-        else
+
+        # Extract components of version string
+        $major = [Convert]::ToInt32($Matches[1])
+        $minor = [Convert]::ToInt32($Matches[2])
+        $patch = [Convert]::ToInt32($Matches[3])
+        $Prerelease = $Matches[4]
+        $Buildmetadata = $Matches[5]
+
+        # Make sure prerelease and buildmetadata are at least an empty string
+        if ($null -eq $Prerelease) {
+            $Prerelease = ""
+        }
+
+        if ($null -eq $Buildmetadata) {
+            $Buildmetadata = ""
+        }
+
+        # Check if we are a prerelease version
+        $IsPrerelease = $false
+        if (![string]::IsNullOrEmpty($Prerelease))
         {
-            # Couldn't identify a usable version format
-            if ($AllMustMatch)
-            {
-                throw New-Object ArgumentException -ArgumentList "Version supplied (${source}) is not formatted correctly"
-            }
+            $IsPrerelease = $true
         }
+
+        # Version is valid - Write to output stream
+        Write-Verbose "Version is valid"
+        [PSCustomObject]@{
+            Raw = $Source
+            Tag = $tag
+            Major = $major
+            Minor = $minor
+            Patch = $patch
+            Prerelease = $Prerelease
+            Buildmetadata = $Buildmetadata
+            BuildVersion = ("{0}.{1}.{2}.{3}" -f $major, $minor, $patch, (Get-BuildNumber))
+            AssemblyVersion = "${major}.0.0.0"
+            PlainVersion = ("{0}.{1}.{2}" -f $major, $minor, $patch)
+            IsPrerelease = $IsPrerelease
+        }
+
+        $MatchFound = $true
     }
 
     end
     {
-        if ($MatchRequired -and $matchNum -lt 1)
+        if ($Required -and !$MatchFound)
         {
-            throw New-Object Exception -ArgumentList "MatchRequired specified and no match found"
+            # throw error as we didn't find a valid version source
+            Write-Error "Could not find a valid version source"
         }
-    }
-}
-
-<#
-#>
-Function Update-VersionStore
-{
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true,ValueFromPipeline)]
-        [VersionStore]$Version,
-
-        [Parameter(Mandatory=$false)]
-        [switch]$IncrementMajor = $false,
-
-        [Parameter(Mandatory=$false)]
-        [switch]$IncrementMinor = $false,
-
-        [Parameter(Mandatory=$false)]
-        [switch]$IncrementPatch,
-
-        [Parameter(Mandatory=$false)]
-        [switch]$AddMissingBuildNumber = $false,
-
-        [Parameter(Mandatory=$false)]
-        [switch]$ForceBuildGeneration = $false
-    )
-
-    process
-    {
-        if ($Version -eq $null)
-        {
-            return
-        }
-
-        if ($IncrementPatch)
-        {
-            $Version.Patch++
-        }
-
-        if ($IncrementMinor)
-        {
-            $Version.Minor++
-            $version.Patch = 0
-        }
-
-        if ($IncrementMajor)
-        {
-            $Version.Major++
-            $Version.Minor = 0
-            $Version.Patch = 0
-        }
-
-        if (($AddMissingBuildNumber -and $Version.Build -eq 0) -or $ForceBuildGeneration)
-        {
-            $version.Build = [Int64]([DateTime]::Now - $script:MinDate).TotalDays
-        }
-
-        $Version
     }
 }
