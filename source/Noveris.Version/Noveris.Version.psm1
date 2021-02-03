@@ -84,6 +84,9 @@ Function Select-ValidVersions
             $working = $working.Substring(1)
         }
 
+        # Save a copy of this content as the full version, which is the tag, minus any leading 'v'
+        $fullVersion = $working
+
         # Check if we match the semver regex pattern
         # Regex used directly from semver.org
         if ($working -notmatch $semVerPattern)
@@ -123,6 +126,7 @@ Function Select-ValidVersions
             Major = $major
             Minor = $minor
             Patch = $patch
+            FullVersion = $fullVersion
             Prerelease = $Prerelease
             Buildmetadata = $Buildmetadata
             BuildVersion = ("{0}.{1}.{2}.{3}" -f $major, $minor, $patch, (Get-BuildNumber))
